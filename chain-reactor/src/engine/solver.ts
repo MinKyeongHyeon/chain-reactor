@@ -8,6 +8,9 @@ export const triggerExplosion = (
   // 경계 검사 및 타일 확인
   if (r < 0 || r >= rows || c < 0 || c >= cols || grid[r][c] === 0) return;
 
+  //  어느 좌표가 터지고 있는지 콘솔에 찍힙니다.
+  console.log(`폭발 중... 좌표: [${r}, ${c}]`);
+
   // 타일 제거
   grid[r][c] = 0;
 
