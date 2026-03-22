@@ -1,145 +1,190 @@
-import { useEffect, useRef, useState } from "react";
-import { triggerExplosion } from "./engine/solver";
-
-// 1. 상수 설정 (한 곳에서 관리하면 수정이 편합니다)
-const ROWS = 20;
-const COLS = 20;
-const TILE_SIZE = 30;
+import { useEffect, useRef } from "react";
+import { useGameStore } from "./store";
+import { renderGrid } from "./renderer/canvas";
+import { COLS, ROWS, TILE_SIZE } from "./engine/grid";
+import "./App.css";
 
 function App() {
+  const store = useGameStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const requestRef = useRef<number | undefined>(undefined);
+  const previousTimeRef = useRef<number | undefined>(undefined);
 
-  // 2. 게임의 '두뇌' (데이터 상태)
-  const [grid, setGrid] = useState<number[][]>(() =>
-    Array.from({ length: ROWS }, () =>
-      Array.from({ length: COLS }, () => (Math.random() > 0.3 ? 1 : 0)),
-    ),
-  );
-
-  // 3. Canvas 렌더링 엔진 (데이터가 변할 때마다 화면을 다시 그림)
+  // Canvas 렌더링
   useEffect(() => {
+    if (store.phase !== "COMBAT" && store.phase !== "AUGMENT_SELECT") return;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !store.dungeon) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // 화면 지우기 (배경)
-    ctx.fillStyle = "#1a1a1a";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    renderGrid(ctx, store.dungeon.grid, ROWS, COLS, TILE_SIZE);
+  }, [store.dungeon?.grid, store.phase]);
 
-    // 데이터 기반으로 타일 그리기
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        if (grid[r][c] === 1) {
-          ctx.fillStyle = "#4f46e5"; // 타일 색상 (인디고)
-          ctx.shadowBlur = 5;
-          ctx.shadowColor = "#4f46e5";
-          ctx.fillRect(
-            c * TILE_SIZE,
-            r * TILE_SIZE,
-            TILE_SIZE - 2, // 타일 사이 간격을 위해 2px 뺌
-            TILE_SIZE - 2,
-          );
-          ctx.shadowBlur = 0; // 다른 그림에 영향 안 주게 초기화
-        }
+  // 타일 하강 루프
+  useEffect(() => {
+    if (store.phase !== "COMBAT" || !store.dungeon) return;
+    const intervalId = setInterval(() => {
+      store.dropNewRow();
+    }, store.dungeon.dropInterval);
+    return () => clearInterval(intervalId);
+  }, [store.phase, store.dungeon?.dropInterval, store.dungeon?.floor, store.dropNewRow]);
+
+  // 체력 틱 드레인 루프
+  useEffect(() => {
+    if (store.phase !== "COMBAT" || !store.dungeon) return;
+    if (store.dungeon.modifiers.hpDrainPerSec <= 0) return;
+
+    const animate = (time: number) => {
+      if (previousTimeRef.current !== undefined) {
+        const deltaTime = time - previousTimeRef.current;
+        store.tickHP(deltaTime);
       }
-    }
-  }, [grid]); // grid가 변할 때만 Canvas를 다시 그립니다.
+      previousTimeRef.current = time;
+      requestRef.current = requestAnimationFrame(animate);
+    };
+    
+    requestRef.current = requestAnimationFrame(animate);
 
-  // 4. 클릭 핸들러 (좌표 변환 및 재귀 호출)
+    return () => {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      previousTimeRef.current = undefined;
+    };
+  }, [store.phase, store.dungeon?.modifiers.hpDrainPerSec, store.tickHP]);
+
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (store.phase !== "COMBAT") return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // 마우스 클릭 위치를 캔버스 내부 좌표로 계산
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // 픽셀 좌표 -> 격자 인덱스 변환
     const col = Math.floor(x / TILE_SIZE);
     const row = Math.floor(y / TILE_SIZE);
 
-    // 기존 그리드 복사 (불변성 유지)
-    const newGrid = grid.map((line) => [...line]);
-
-    // 재귀 폭발 알고리즘 실행
-    triggerExplosion(newGrid, row, col, ROWS, COLS);
-
-    // 상태 업데이트 -> useEffect 실행 -> Canvas 리렌더링
-    setGrid(newGrid);
+    store.clickTile(row, col);
   };
 
-  return (
-    <div
-      style={{
-        padding: "20px",
-        fontFamily: "sans-serif",
-        color: "white",
-        backgroundColor: "#0f172a",
-        minHeight: "100vh",
-      }}
-    >
-      <h1>Chain Reactor Engine</h1>
-      <p>타일 뭉치를 클릭해서 연쇄 반응을 확인하세요!</p>
+  // === 화면별 렌더링 ===
 
-      <div style={{ display: "flex", gap: "20px" }}>
-        {/* 핵심: Canvas 엔진 */}
-        <div
-          style={{
-            border: "2px solid #334155",
-            borderRadius: "8px",
-            overflow: "hidden",
-          }}
-        >
-          <canvas
-            ref={canvasRef}
-            onClick={handleCanvasClick}
-            width={COLS * TILE_SIZE}
-            height={ROWS * TILE_SIZE}
-            style={{ cursor: "pointer", display: "block" }}
-          />
-        </div>
-
-        {/* 대조군: 정보창 */}
-        <div
-          style={{
-            padding: "20px",
-            background: "#1e293b",
-            borderRadius: "8px",
-            flex: 1,
-          }}
-        >
-          <h3>Engine Status</h3>
-          <p>
-            Grid: {ROWS} x {COLS}
-          </p>
-          <p>Total Tiles: {ROWS * COLS}</p>
-          <button
-            onClick={() =>
-              setGrid(
-                Array.from({ length: ROWS }, () =>
-                  Array.from({ length: COLS }, () =>
-                    Math.random() > 0.3 ? 1 : 0,
-                  ),
-                ),
-              )
-            }
-            style={{
-              padding: "10px 20px",
-              cursor: "pointer",
-              backgroundColor: "#4f46e5",
-              color: "white",
-              border: "none",
-              borderRadius: "4px",
-            }}
-          >
-            Reset Grid
+  // 1. MENU
+  if (store.phase === "MENU") {
+    return (
+      <div className="game-container menu-bg">
+        <div className="menu-panel">
+          <h1 className="title">CHAIN REACTOR</h1>
+          <p className="subtitle">액션 로그라이크 퍼즐</p>
+          
+          <div className="stats-box">
+            <h3>강화 현황 (영구 스탯)</h3>
+            <p>보유 재화: <span className="highlight-currency">{store.profile.currency} Energy</span></p>
+            <ul>
+              <li>기본 대미지 계수: x{store.profile.persistentStats.attackPower.toFixed(1)}</li>
+              <li>콤보 보너스: +{Math.round(store.profile.persistentStats.comboBonus * 100)}%</li>
+              <li>운(희귀 등장 확률): +{Math.round(store.profile.persistentStats.luck * 100)}%</li>
+              <li>최대 체력: {store.profile.persistentStats.maxHP}</li>
+            </ul>
+          </div>
+          <button className="btn-primary" onClick={store.startRun}>
+            던전 진입
           </button>
         </div>
+      </div>
+    );
+  }
+
+  // 2. RESULT
+  if (store.phase === "RESULT") {
+    return (
+      <div className="game-container result-bg">
+        <div className="menu-panel">
+          <h1 className="title text-red">SYSTEM OVERLOAD</h1>
+          <h2 className="subtitle">체력이 0이 되었습니다.</h2>
+          
+          <div className="stats-box">
+            <h3>런(Run) 결과</h3>
+            <p>도달 층수: Floor {store.dungeon?.floor}</p>
+            <p>누적 에너지: {store.dungeon?.totalEnergy}</p>
+            <p className="highlight-currency">획득 재화: +{Math.floor((store.dungeon?.totalEnergy || 0) * 0.1)}</p>
+          </div>
+          <button className="btn-primary" onClick={store.continueToMenu}>
+            메뉴로 돌아가기
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. COMBAT & AUGMENT_SELECT
+  const isAugmentPhase = store.phase === "AUGMENT_SELECT";
+
+  return (
+    <div className="game-container combat-bg">
+      {/* 화면 상단 정보: 층수, 스코어 */}
+      <div className="top-bar">
+        <div className="left-info">
+          <h2>Floor {store.dungeon?.floor}</h2>
+        </div>
+        <div className="center-info">
+          <div className="combo-text">
+            {store.dungeon && store.dungeon.comboCount > 1 && (
+              <span className="combo-pop">{store.dungeon.comboCount} COMBO!</span>
+            )}
+          </div>
+        </div>
+        <div className="right-info">
+          <h2>Energy: {store.dungeon?.energy} / {store.dungeon?.nextAugmentAt}</h2>
+          <p>Total: {store.dungeon?.totalEnergy}</p>
+        </div>
+      </div>
+
+      {/* 체력(HP) 바 */}
+      <div className="hp-container">
+        <div 
+          className="hp-bar" 
+          style={{ width: `${Math.max(0, ((store.dungeon?.hp || 0) / (store.dungeon?.maxHP || 100)) * 100)}%` }}
+        />
+        <div className="hp-text">{Math.ceil(store.dungeon?.hp || 0)} / {store.dungeon?.maxHP} HP</div>
+      </div>
+
+      {/* 메인 캔버스 구역 */}
+      <div className="canvas-wrapper">
+        <canvas
+          ref={canvasRef}
+          width={COLS * TILE_SIZE}
+          height={ROWS * TILE_SIZE}
+          onClick={handleCanvasClick}
+          className="board-canvas"
+        />
+
+        {/* 증강 선택 오버레이 */}
+        {isAugmentPhase && (
+          <div className="overlay-modal">
+            <h2 className="modal-title">증강 선택 (치명적 오류 방지)</h2>
+            <div className="augment-cards">
+              {store.augmentChoices.map((aug, idx) => (
+                <div 
+                  key={`${aug.id}-${idx}`} 
+                  className={`augment-card rarity-${aug.rarity}`}
+                  onClick={() => store.selectAugment(aug)}
+                >
+                  <h3 className="aug-name">{aug.name}</h3>
+                  <p className="aug-desc">{aug.description}</p>
+                  <div className="aug-stats">
+                    <span className="benefit">[{aug.benefit.stat}] +{aug.benefit.value}</span>
+                    <span className="penalty">[{aug.penalty.stat}] {aug.penalty.value > 0 ? '+' : ''}{aug.penalty.value}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 export default App;
+
